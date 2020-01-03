@@ -1,87 +1,16 @@
 mod io;
+mod avro;
 
 use json;
-use std::collections::{HashMap, HashSet};
-use json::JsonValue;
-use json::number::Number;
-use avro_rs::Schema;
-use avro_rs::schema::{Name, UnionSchema, RecordField, RecordFieldOrder};
 use std::ptr::null;
 use crate::io::GzipFile;
-use std::time::Instant;
+use std::time::{Instant, Duration};
 use std::borrow::Borrow;
 use serde_json;
-use serde_json::Value;
+use serde_json::{Value, Map};
 use simd_json;
+use std::thread;
 
-fn get_type(jsonValue: &JsonValue) -> Schema {
-    if jsonValue.is_boolean() {
-        Schema::Boolean
-    }
-    else if jsonValue.is_string() {
-        Schema::String
-    }
-    else if jsonValue.is_number() {
-        let (_, mantissa, exponent) = jsonValue.as_number().unwrap().as_parts();
-        if exponent == 0 {
-            Schema::Long
-        }
-        else {
-            Schema::Double
-        }
-    }
-    else if jsonValue.is_empty() {
-        Schema::Null
-    }
-//    else if json.is_array() {
-//        let element_type_set: HashSet<Schema> = json.members().map(|array_element| get_type(array_element)).collect();
-//        let mut element_types: Vec<&Schema>= element_type_set.iter().collect();
-//        if element_types.len() == 1 {
-//            element_types.pop().unwrap().to_owned()
-//        }
-//        else if element_types.len() == 0 {
-//            Schema::Null
-//        }
-//        else {
-//            let mut elements = Vec::new();
-//            element_types.
-//                iter().
-//                map(|t| t.to_owned().to_owned()).
-//                for_each(|t| {elements.push(t);});
-//
-//            Schema::Union(UnionSchema{schemas: elements, variant_index: Default::default() })
-//        }
-//    }
-    else {
-        Schema::Null
-    }
-}
-
-//fn infer_schema(json: &JsonValue) -> String {
-//    let mut schema = JsonValue::new_object();
-//    let entries = json.entries();
-//    entries.for_each(|(field_name, value)| {schema.insert(field_name, get_type(value));});
-//    schema.to_string()
-//}
-
-fn infer_schema2(json: &JsonValue, record_name: String) -> Option<Schema> {
-    if json.is_object() {
-        let fields: Vec<RecordField> =
-            json.entries().enumerate().map(|(idx, (field_name, value))| RecordField{
-                name: field_name.to_string(),
-                doc: None,
-                default: None,
-                schema: get_type(value),
-                order: RecordFieldOrder::Ascending,
-                position: idx
-            }).collect();
-        Some(Schema::Record {
-            name: Name{ name: record_name, namespace: None, aliases: None },
-            doc: None, fields: fields,
-            lookup: Default::default() })
-    }
-    else {None}
-}
 
 fn json_benchmark() {
     let json_file = GzipFile::new("TweetsChampions.json.gz");
@@ -114,9 +43,11 @@ fn simd_benchmark() {
     println!("Execution time: {:?}", now.elapsed().as_millis());
 }
 
-
 fn main() {
-    json_benchmark();
-//    serde_benchmark();
-    simd_benchmark()
+//    json_benchmark();
+////    serde_benchmark();
+//    simd_benchmark();
+    let json = r#"{"a":1, "b": [1], "c": {"d": true}}"#;
+    let schema = avro::infer_schema(&json::parse(json).unwrap());
+    println!("{:?}", &schema);
 }

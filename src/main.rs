@@ -17,6 +17,7 @@ use simd_json::value::{Value as SimdValue};
 use flate2::{write::DeflateEncoder, Compression};
 use std::io::Write;
 use libdeflater::{Compressor, CompressionLvl};
+use deflate::deflate_bytes;
 
 
 fn json_benchmark() {
@@ -69,12 +70,26 @@ fn flate2_benchmark() {
 fn libflater_benchmark() {
     let json_file = GzipFile::new("TweetsChampions.json.gz");
     let now = Instant::now();
-    let mut compressor = Compressor::new(CompressionLvl::new(6).unwrap());
+    let mut dc = libdeflater::Compressor::new(CompressionLvl::new(6).unwrap());
     json_file
         .lines
         .for_each(|line| {
+            let l = line.unwrap();
+            let bytes = l.as_bytes();
             let mut v = Vec::new();
-            compressor.deflate_compress(line.unwrap().as_bytes(), &mut v);
+            v.resize(dc.deflate_compress_bound(bytes.len()), 0);
+            dc.deflate_compress(bytes, &mut v).unwrap();
+        });
+    println!("Execution time: {:?}", now.elapsed().as_millis());
+}
+
+fn deflate_benchmark() {
+    let json_file = GzipFile::new("TweetsChampions.json.gz");
+    let now = Instant::now();
+    json_file
+        .lines
+        .for_each(|line| {
+            let b = deflate_bytes(line.unwrap().as_bytes());
         });
     println!("Execution time: {:?}", now.elapsed().as_millis());
 }
@@ -83,6 +98,7 @@ fn main() {
 //    json_benchmark();
 ////    serde_benchmark();
 //    simd_benchmark();
-//    flate2_benchmark();
-    libflater_benchmark();
+    flate2_benchmark();
+//    libflater_benchmark();
+//    deflate_benchmark();
 }

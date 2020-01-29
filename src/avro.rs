@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use json::JsonValue;
 use json::number::Number;
 use avro_rs::Schema;
-use avro_rs::schema::{Name, UnionSchema, RecordField, RecordFieldOrder};
+use avro_rs::schema::{Name, UnionSchema, RecordField, RecordFieldOrder, SchemaKind};
 use serde_json;
 use serde_json::{Value, Map};
 use failure::Error;
@@ -98,29 +98,110 @@ pub fn merge_schemas(schema1: Schema, schema2: Schema) -> Schema {
     match (schema1, schema2) {
         (Schema::Record {name: name1, doc: doc1, fields: mut fields1, lookup: lookup1},
             Schema::Record {name: name2, doc: doc2, fields: mut fields2, lookup: mut lookup2}) => {
-            let mut merged_fields = Vec::new();
-            for (field_name, index1) in lookup1 {
-                let field1 = fields1.get(index1).unwrap();
-                if let Some(index2) = lookup2.remove(field_name.as_str()) {
-                    let field2 = fields2.get(index2).unwrap();
-                    merge_schemas(field1.schema.clone(), field2.schema.clone());
+            let mut all_fields = HashMap::new();
+            for field in fields1 {
+                all_fields.insert((&field).name.clone(), vec![field]);
+            }
+
+            for field in fields2 {
+                if all_fields.contains_key(&field.name) {
+                    all_fields.get_mut(&field.name).unwrap().push(field);
                 } else {
-                    let mut field = field1.clone();
-                    field.position = merged_fields.len();
-                    merged_fields.push(field);
+                    all_fields.insert((&field).name.clone(), vec![field]);
                 }
             }
 
-            for (_, index2) in lookup2 {
-                let field2 = fields2.get(index2).unwrap();
-                let mut field = field2.clone();
-                field.position = merged_fields.len();
-                merged_fields.push(field);
+            let mut merged_fields = Vec::new();
+            for (field_name, mut fields) in all_fields {
+                if fields.len() == 1 {
+                    let mut field = fields.pop().unwrap();
+                    let schema = Schema::Union(UnionSchema::new(vec![Schema::Null, (&field).schema.clone()]).unwrap());
+                    field.position = merged_fields.len();
+                    field.schema = schema;
+                    field.default = Some(Value::Null);
+                    merged_fields.push(field);
+                } else {
+                    let (mut field1, field2) = (fields.pop().unwrap(), fields.pop().unwrap());
+                    let merged_schema = merge_schemas((&field1).schema.clone(), field2.schema);
+                    field1.schema = merged_schema;
+                    field1.position = merged_fields.len();
+                    merged_fields.push(field1);
+                }
             }
 
             let lookup: HashMap<String, usize> = merged_fields.iter().enumerate().map(|(i, field)| (field.name.clone(), i)).collect();
             Schema::Record {name: name1, doc: doc1, fields: merged_fields, lookup}
         }
-        _ => {Schema::String} // ToDo: dummy value, to pass the compiler
+        (Schema::Union(us1), Schema::Union(us2)) => {
+            let mut schema_kinds: HashMap<SchemaKind, Vec<Schema>> = HashMap::new();
+            for schema in us1.variants().to_vec() {
+                let sk = SchemaKind::from(&schema);
+                schema_kinds.insert(sk, vec![schema]);
+            }
+
+            for schema in us2.variants().to_vec() {
+                let sk = SchemaKind::from(&schema);
+                if schema_kinds.contains_key(&sk) {
+                    schema_kinds.get_mut(&sk).unwrap().push(schema);
+                } else {
+                    schema_kinds.insert(sk, vec![schema]);
+                }
+            }
+
+            let mut merged_schemas = Vec::new();
+            for (_, mut schemas) in schema_kinds {
+                if schemas.len() == 1 {
+                    merged_schemas.push(schemas.pop().unwrap());
+                } else {
+                    merged_schemas.push(merge_schemas(schemas.pop().unwrap(), schemas.pop().unwrap()));
+                }
+            }
+
+            Schema::Union(UnionSchema::new(merged_schemas).unwrap())
+        }
+        (Schema::Array(schema1), Schema::Array(schema2)) => {
+            let merged_schema = merge_schemas(*schema1, *schema2);
+            Schema::Array(Box::new(merged_schema))
+        }
+        (Schema::Map(schema1), Schema::Map(schema2)) => {
+            let merged_schema = merge_schemas(*schema1, *schema2);
+            Schema::Map(Box::new(merged_schema))
+        }
+        (s1, s2) if SchemaKind::from(&s1) == SchemaKind::from(&s2) => {
+            s1
+        }
+        (s1, s2) => {
+            Schema::Union(UnionSchema::new(vec![s1, s2]).unwrap())
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_merge_schema() {
+        let schema1 = Schema::parse_str(r#"{
+     "type": "record",
+     "namespace": "com.example",
+     "name": "FullName",
+     "fields": [
+       { "name": "first", "type": "string" },
+       { "name": "last", "type": "string" }
+     ]
+} "#).unwrap();
+
+        let schema2 = Schema::parse_str(r#"{
+     "type": "record",
+     "namespace": "com.example",
+     "name": "FullName",
+     "fields": [
+       { "name": "first", "type": "string" }
+     ]
+} "#).unwrap();
+
+        let merged_schema = merge_schemas(schema1.clone(), schema2);
+        println!("{:?}", &merged_schema);
     }
 }

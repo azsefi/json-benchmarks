@@ -149,6 +149,10 @@ pub fn merge_schemas(schema1: Schema, schema2: Schema) -> Schema {
             }
 
             let mut merged_schemas = Vec::new();
+
+            if let Some(_) = schema_kinds.remove(&SchemaKind::Null) {
+                merged_schemas.push(Schema::Null);
+            }
             for (_, mut schemas) in schema_kinds {
                 if schemas.len() == 1 {
                     merged_schemas.push(schemas.pop().unwrap());
@@ -197,7 +201,7 @@ mod tests {
      "namespace": "com.example",
      "name": "FullName",
      "fields": [
-       { "name": "first", "type": "string" }
+       { "name": "first", "type": "int" }
      ]
 } "#).unwrap();
 

@@ -95,10 +95,10 @@ fn deflate_benchmark() {
 }
 
 fn main() {
-//    json_benchmark();
+    json_benchmark();
 ////    serde_benchmark();
-//    simd_benchmark();
-    flate2_benchmark();
+    simd_benchmark();
+//    flate2_benchmark();
 //    libflater_benchmark();
 //    deflate_benchmark();
 }

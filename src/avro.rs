@@ -93,3 +93,34 @@ pub fn infer_schema(json_value: &JsonValue) -> Result<Schema, Error> {
     let schema_value = infer_record_schema(json_value, "inferred_schema".to_owned());
     Schema::parse(schema_value.as_ref().unwrap())
 }
+
+pub fn merge_schemas(schema1: Schema, schema2: Schema) -> Schema {
+    match (schema1, schema2) {
+        (Schema::Record {name: name1, doc: doc1, fields: mut fields1, lookup: lookup1},
+            Schema::Record {name: name2, doc: doc2, fields: mut fields2, lookup: mut lookup2}) => {
+            let mut merged_fields = Vec::new();
+            for (field_name, index1) in lookup1 {
+                let field1 = fields1.get(index1).unwrap();
+                if let Some(index2) = lookup2.remove(field_name.as_str()) {
+                    let field2 = fields2.get(index2).unwrap();
+                    merge_schemas(field1.schema.clone(), field2.schema.clone());
+                } else {
+                    let mut field = field1.clone();
+                    field.position = merged_fields.len();
+                    merged_fields.push(field);
+                }
+            }
+
+            for (_, index2) in lookup2 {
+                let field2 = fields2.get(index2).unwrap();
+                let mut field = field2.clone();
+                field.position = merged_fields.len();
+                merged_fields.push(field);
+            }
+
+            let lookup: HashMap<String, usize> = merged_fields.iter().enumerate().map(|(i, field)| (field.name.clone(), i)).collect();
+            Schema::Record {name: name1, doc: doc1, fields: merged_fields, lookup}
+        }
+        _ => {Schema::String} // ToDo: dummy value, to pass the compiler
+    }
+}

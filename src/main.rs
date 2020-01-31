@@ -7,7 +7,7 @@ use crate::io::GzipFile;
 use std::time::{Instant, Duration};
 use std::borrow::Borrow;
 use serde_json;
-use serde_json::{Value, Map};
+use serde_json::{Value, Map, Deserializer};
 use simd_json;
 use std::thread;
 use dns_lookup;
@@ -15,9 +15,12 @@ use std::net::{IpAddr, Ipv4Addr};
 use std::str::FromStr;
 use simd_json::value::{Value as SimdValue};
 use flate2::{write::DeflateEncoder, Compression};
-use std::io::Write;
+use std::io::{Write, BufRead};
 use libdeflater::{Compressor, CompressionLvl};
 use deflate::deflate_bytes;
+use json::JsonValue;
+use json::number::Number;
+
 #[macro_use] extern crate lazy_static;
 
 
@@ -32,26 +35,28 @@ fn json_benchmark() {
 }
 
 
-//fn serde_benchmark() {
-//    let json_file = GzipFile::new("TweetsChampions.json.gz");
-//    let now = Instant::now();
-//    json_file
-//        .lines
-//        .map(|x| x.unwrap())
-//        .for_each(|x| {let x: Value = serde_json::from_str(x.as_str()).unwrap();});
-//    println!("Execution time: {:?}", now.elapsed().as_millis());
-//}
+fn serde_benchmark() {
+    let mut json_file = GzipFile::new("TweetsChampions.json.gz");
+    let now = Instant::now();
+    for line_result in json_file.lines.into_iter() {
+        if let Ok(line) = line_result {
+            let x: Value = serde_json::from_str(line.as_ref()).unwrap();
+        }
+    }
+    println!("Execution time: {:?}", now.elapsed().as_millis());
+}
 
 fn simd_benchmark() {
     let json_file = GzipFile::new("TweetsChampions.json.gz");
     let now = Instant::now();
-    json_file
-        .lines
-        .map(|x| x.unwrap())
-        .for_each(|mut x| unsafe {
-//            let x: Value = simd_json::serde::from_slice(x.as_mut_vec()).unwrap();
-            let v = simd_json::to_borrowed_value(x.as_bytes_mut()).unwrap();
-        });
+    for line_result in json_file.lines {
+        if let Ok(mut line) = line_result {
+//            let v = unsafe { simd_json::to_borrowed_value(line.as_bytes_mut()).unwrap() };
+            let tape = unsafe { simd_json::to_tape(line.as_bytes_mut()).unwrap()};
+            println!("{:?}", tape);
+            break
+        }
+    }
     println!("Execution time: {:?}", now.elapsed().as_millis());
 }
 
@@ -96,10 +101,11 @@ fn deflate_benchmark() {
 }
 
 fn main() {
-    json_benchmark();
-////    serde_benchmark();
-    simd_benchmark();
+//    json_benchmark();
+//    serde_benchmark();
+//    simd_benchmark();
 //    flate2_benchmark();
 //    libflater_benchmark();
 //    deflate_benchmark();
+    println!("{:?}", JsonValue::Number(Number::from(123)).as_fixed_point_i64(0));
 }

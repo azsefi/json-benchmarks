@@ -18,6 +18,7 @@ use flate2::{write::DeflateEncoder, Compression};
 use std::io::Write;
 use libdeflater::{Compressor, CompressionLvl};
 use deflate::deflate_bytes;
+#[macro_use] extern crate lazy_static;
 
 
 fn json_benchmark() {

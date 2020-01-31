@@ -16,6 +16,19 @@ use std::ops::{DerefMut, Deref};
 use std::iter::FromIterator;
 
 
+lazy_static! {
+    static ref PRIMITIVES: HashSet<SchemaKind> = HashSet::from_iter(vec![SchemaKind::Null, SchemaKind::String, SchemaKind::Boolean, SchemaKind::Double, SchemaKind::Long, SchemaKind::Bytes, SchemaKind::Float, SchemaKind::Int]);
+    static ref DUMMY_FIELD: RecordField = RecordField{
+                name: "".to_string(),
+                doc: None,
+                default: None,
+                schema: Schema::Null,
+                order: RecordFieldOrder::Ascending,
+                position: 0
+            };
+}
+
+
 pub struct GzipFile {
     pub lines: Lines<BufReader<GzDecoder<File>>>
 }
@@ -29,6 +42,66 @@ impl GzipFile {
         GzipFile{lines}
     }
 }
+
+
+pub fn infer_schema_serde(json_value: Value, name: &str) -> Result<Schema, Error> {
+    match json_value {
+        Value::Bool(_) => Ok(Schema::Boolean),
+        Value::String(_) => Ok(Schema::String),
+        Value::Number(number) => {
+            if number.is_u64() || number.is_i64() {
+                Ok(Schema::Long)
+            }
+            else {
+                Ok(Schema::Double)
+            }
+        },
+        Value::Array(mut vector) => {
+            let items_schema =
+                if let Some(first_element) = vector.pop() {
+                    let initial_schema = infer_schema_serde(first_element, name);
+                    vector
+                        .into_iter()
+                        .fold(initial_schema, |base, element| {
+                            let schema = infer_schema_serde(element, name)?;
+                            merge_schemas(base?, schema)
+                        })
+                } else {
+                    // if array is empty then type is null
+                    Ok(Schema::Null)
+                };
+
+            Ok(Schema::Array(Box::new(items_schema?)))
+        },
+        Value::Object(obj) => {
+            let mut fields = Vec::new();
+            for (field_name, field_value) in obj{
+                let field_schema = infer_schema_serde(field_value, &field_name)?;
+                let record_field = RecordField{
+                    name: field_name,
+                    doc: None,
+                    default: None,
+                    schema: field_schema,
+                    order: RecordFieldOrder::Ascending,
+                    position: fields.len()
+                };
+                fields.push(record_field);
+            }
+            Ok(Schema::Record {
+                name: Name {
+                    name: name.to_owned(),
+                    namespace: None,
+                    aliases: None
+                },
+                doc: None,
+                fields,
+                lookup: Default::default()
+            })
+        },
+        Value::Null => Ok(Schema::Null)
+    }
+}
+
 
 pub fn infer_schema(json_value: &JsonValue, name: &str) -> Result<Schema, Error> {
     match json_value {
@@ -91,28 +164,17 @@ pub fn infer_schema(json_value: &JsonValue, name: &str) -> Result<Schema, Error>
     }
 }
 
-lazy_static! {
-    static ref PRIMITIVES: HashSet<SchemaKind> = HashSet::from_iter(vec![SchemaKind::Null, SchemaKind::String, SchemaKind::Boolean, SchemaKind::Double, SchemaKind::Long, SchemaKind::Bytes, SchemaKind::Float, SchemaKind::Int]);
-}
 
 pub fn merge_schemas(schema1: Schema, schema2: Schema) -> Result<Schema, Error> {
     match (schema1, schema2) {
-        (Schema::Record {name: name1,  doc: doc1, fields: fields1, mut lookup},
+        (Schema::Record {name,  doc, fields: fields1, mut lookup},
             Schema::Record {name: _, doc: _, fields: mut fields2, lookup: mut lookup2}) => {
-            let dummy_field = RecordField{
-                name: "".to_string(),
-                doc: None,
-                default: None,
-                schema: Schema::Null,
-                order: RecordFieldOrder::Ascending,
-                position: 0
-            };
             let mut merged_fields = Vec::new();
             for mut field1 in fields1 {
                 let schema2 =
                     lookup2
                         .remove(&field1.name)
-                        .map(|idx2| std::mem::replace(&mut fields2[idx2], dummy_field.clone()))
+                        .map(|idx2| std::mem::replace(&mut fields2[idx2], DUMMY_FIELD.clone()))
                         .map(|field2| field2.schema);
 
                 let merged_schema = merge_schemas(field1.schema, schema2.unwrap_or(Schema::Null))?;
@@ -121,7 +183,7 @@ pub fn merge_schemas(schema1: Schema, schema2: Schema) -> Result<Schema, Error> 
             }
 
             for (field_name, idx2) in lookup2 {
-                let mut field2 = std::mem::replace(&mut fields2[idx2], dummy_field.clone());
+                let mut field2 = std::mem::replace(&mut fields2[idx2], DUMMY_FIELD.clone());
                 field2.position = merged_fields.len();
                 lookup.insert(field_name, merged_fields.len());
                 field2.schema = merge_schemas(Schema::Null, field2.schema)?;
@@ -152,7 +214,7 @@ pub fn merge_schemas(schema1: Schema, schema2: Schema) -> Result<Schema, Error> 
 //                merged_fields.push(field);
 //            }
 
-            Ok(Schema::Record {name: name1, doc: doc1, fields: merged_fields, lookup})
+            Ok(Schema::Record {name, doc, fields: merged_fields, lookup})
         }
         (Schema::Union(mut us1), Schema::Union(mut us2)) => {
             let mut schema_kinds: HashMap<SchemaKind, Vec<Schema>> = HashMap::new();
@@ -320,7 +382,8 @@ mod test {
         let mut schemas =
             GzipFile::new("/usr/local/google/home/shafirasulov/IdeaProjects/learningrust/TweetsChampions.json.gz")
                 .lines
-                .take(5000)
+//                .take(5000)
+//                .map(|line| serde_json::from_str(line.unwrap().as_str()).unwrap())
                 .map(|line| json::parse(line.unwrap().as_str()).unwrap())
                 .enumerate()
                 .map(|(i, line)| infer_schema(&line, "inferred_schema"))

@@ -12,7 +12,7 @@ use std::fs::File;
 use flate2::read::GzDecoder;
 use std::io::{BufReader, BufRead, Lines};
 use regex::Regex;
-use std::borrow::Cow;
+use std::borrow::{Cow, BorrowMut};
 use std::ops::{DerefMut, Deref};
 use std::iter::FromIterator;
 
@@ -106,8 +106,8 @@ pub fn infer_schema_serde(json_value: Value, name: &str) -> Result<Schema, Error
 
 pub fn infer_schema(json_value: &JsonValue, name: &str) -> Result<Schema, Error> {
     match json_value {
-        JsonValue::Boolean(_) => Ok(Schema::Boolean),
-        JsonValue::String(_) => Ok(Schema::String),
+        JsonValue::Boolean(_) => { Ok(Schema::Boolean) },
+        JsonValue::String(_) => { Ok(Schema::String) },
         JsonValue::Number(number) => {
             let (_, mantissa, exponent) = number.as_parts();
             if exponent == 0 {
@@ -148,47 +148,51 @@ pub fn infer_schema(json_value: &JsonValue, name: &str) -> Result<Schema, Error>
                 };
                 fields.push(record_field);
             }
+
+            let lookup: HashMap<String, usize> =
+                fields
+                    .iter()
+                    .enumerate()
+                    .map(|(i,f)| (f.name.clone(), i))
+                    .collect();
+
             Ok(Schema::Record {
-                name: Name {
-                    name: name.to_owned(),
-                    namespace: None,
-                    aliases: None
-                },
+                name: Name::new(name),
                 doc: None,
                 fields,
-                lookup: Default::default()
+                lookup
             })
         },
-        JsonValue::Null => Ok(Schema::Null),
-        JsonValue::Short(_) => Ok(Schema::Long),
-        _ => Ok(Schema::Null)
+        JsonValue::Null => { Ok(Schema::Null) },
+        JsonValue::Short(_) => { Ok(Schema::Long) },
+        _ => { Ok(Schema::Null) }
     }
 }
 
 
 pub fn merge_schemas(schema1: Schema, schema2: Schema) -> Result<Schema, Error> {
     match (schema1, schema2) {
-        (Schema::Record {name,  doc, fields: fields1, mut lookup},
+        (Schema::Record {name,  doc, fields: mut fields1, mut lookup},
             Schema::Record {name: _, doc: _, fields: mut fields2, lookup: mut lookup2}) => {
-            let mut merged_fields = Vec::new();
-            for mut field1 in fields1 {
+//            let mut merged_fields = Vec::new();
+            for mut field1 in fields1.iter_mut() {
                 let schema2 =
                     lookup2
                         .remove(&field1.name)
-                        .map(|idx2| std::mem::replace(&mut fields2[idx2], DUMMY_FIELD.clone()))
-                        .map(|field2| field2.schema);
+                        .map(|idx2| std::mem::replace(&mut fields2[idx2].schema, Schema::Null))
+                        .unwrap_or(Schema::Null);
 
-                let merged_schema = merge_schemas(field1.schema, schema2.unwrap_or(Schema::Null))?;
+                let merged_schema = merge_schemas(std::mem::replace(field1.schema.borrow_mut(), Schema::Null), schema2)?;
                 field1.schema = merged_schema;
-                merged_fields.push(field1);
+//                merged_fields.push(field1);
             }
 
             for (field_name, idx2) in lookup2 {
                 let mut field2 = std::mem::replace(&mut fields2[idx2], DUMMY_FIELD.clone());
-                field2.position = merged_fields.len();
-                lookup.insert(field_name, merged_fields.len());
+                field2.position = fields1.len();
+                lookup.insert(field_name, fields1.len());
                 field2.schema = merge_schemas(Schema::Null, field2.schema)?;
-                merged_fields.push(field2);
+                fields1.push(field2);
             }
 
 //            let mut all_fields: HashMap<String, Vec<RecordField>> =
@@ -215,7 +219,7 @@ pub fn merge_schemas(schema1: Schema, schema2: Schema) -> Result<Schema, Error> 
 //                merged_fields.push(field);
 //            }
 
-            Ok(Schema::Record {name, doc, fields: merged_fields, lookup})
+            Ok(Schema::Record {name, doc, fields: fields1, lookup})
         }
         (Schema::Union(mut us1), Schema::Union(mut us2)) => {
             let mut schema_kinds: HashMap<SchemaKind, Vec<Schema>> = HashMap::new();
@@ -248,58 +252,79 @@ pub fn merge_schemas(schema1: Schema, schema2: Schema) -> Result<Schema, Error> 
             Ok(Schema::Union(UnionSchema::new(merged_schemas)?))
         }
         (Schema::Union(mut us1), s2 ) => {
-            let mut schema_kinds = HashMap::new();
-            while let Some(schema) = us1.variants_mut().pop() {
-                let sk = SchemaKind::from(&schema);
-                schema_kinds.insert(sk, vec![schema]);
+//            let mut schema_kinds = HashMap::new();
+//            while let Some(schema) = us1.variants_mut().pop() {
+//                let sk = SchemaKind::from(&schema);
+//                schema_kinds.insert(sk, vec![schema]);
+//            }
+//
+//            schema_kinds
+//                .entry(SchemaKind::from(&s2))
+//                .or_insert(vec![])
+//                .push(s2);
+//
+//            let mut merged_schemas = Vec::new();
+//            let sk = SchemaKind::from(&Schema::Null);
+//            if schema_kinds.remove(&sk).is_some() {
+//                merged_schemas.push(Schema::Null);
+//            }
+//            for (sk, mut schemas) in schema_kinds {
+//                if schemas.len() == 1 || PRIMITIVES.contains(&sk) {
+//                    merged_schemas.push(schemas.pop().unwrap());
+//                } else {
+//                    merged_schemas.push(merge_schemas(schemas.pop().unwrap(), schemas.pop().unwrap())?);
+//                }
+//            }
+//
+//            Ok(Schema::Union(UnionSchema::new(merged_schemas)?))
+
+            let sk = SchemaKind::from(&s2);
+            if let Some((i, s1)) = us1.find_schema_kind_mut(&sk) {
+                let s1 = std::mem::replace(s1, Schema::Null);
+                let merged_schema = merge_schemas(s1, s2);
+                us1.variants_mut()[i] = merged_schema?;
+            } else {
+                us1.variants_mut().push(s2);
             }
 
-            schema_kinds
-                .entry(SchemaKind::from(&s2))
-                .or_insert(vec![])
-                .push(s2);
-
-            let mut merged_schemas = Vec::new();
-            let sk = SchemaKind::from(&Schema::Null);
-            if schema_kinds.remove(&sk).is_some() {
-                merged_schemas.push(Schema::Null);
-            }
-            for (sk, mut schemas) in schema_kinds {
-                if schemas.len() == 1 || PRIMITIVES.contains(&sk) {
-                    merged_schemas.push(schemas.pop().unwrap());
-                } else {
-                    merged_schemas.push(merge_schemas(schemas.pop().unwrap(), schemas.pop().unwrap())?);
-                }
-            }
-
-            Ok(Schema::Union(UnionSchema::new(merged_schemas)?))
+            Ok(Schema::Union(us1))
         }
         (s2, Schema::Union(mut us1) ) => {
-            let mut schema_kinds = HashMap::with_capacity(us1.variants().len()+1);
-            while let Some(schema) = us1.variants_mut().pop() {
-                let sk = SchemaKind::from(&schema);
-                schema_kinds.insert(sk, vec![schema]);
+//            let mut schema_kinds = HashMap::with_capacity(us1.variants().len()+1);
+//            while let Some(schema) = us1.variants_mut().pop() {
+//                let sk = SchemaKind::from(&schema);
+//                schema_kinds.insert(sk, vec![schema]);
+//            }
+//
+//            schema_kinds
+//                .entry(SchemaKind::from(&s2))
+//                .or_insert(vec![])
+//                .push(s2);
+//
+//            let mut merged_schemas = Vec::new();
+//            let sk = SchemaKind::from(&Schema::Null);
+//            if schema_kinds.remove(&sk).is_some() {
+//                merged_schemas.push(Schema::Null);
+//            }
+//            for (sk, mut schemas) in schema_kinds {
+//                if schemas.len() == 1 || PRIMITIVES.contains(&sk) {
+//                    merged_schemas.push(schemas.pop().unwrap());
+//                } else {
+//                    merged_schemas.push(merge_schemas(schemas.pop().unwrap(), schemas.pop().unwrap())?);
+//                }
+//            }
+//
+//            Ok(Schema::Union(UnionSchema::new(merged_schemas)?))
+            let sk = SchemaKind::from(&s2);
+            if let Some((i, s1)) = us1.find_schema_kind_mut(&sk) {
+                let s1 = std::mem::replace(s1, Schema::Null);
+                let merged_schema = merge_schemas(s1, s2);
+                us1.variants_mut()[i] = merged_schema?;
+            } else {
+                us1.variants_mut().push(s2);
             }
 
-            schema_kinds
-                .entry(SchemaKind::from(&s2))
-                .or_insert(vec![])
-                .push(s2);
-
-            let mut merged_schemas = Vec::new();
-            let sk = SchemaKind::from(&Schema::Null);
-            if schema_kinds.remove(&sk).is_some() {
-                merged_schemas.push(Schema::Null);
-            }
-            for (sk, mut schemas) in schema_kinds {
-                if schemas.len() == 1 || PRIMITIVES.contains(&sk) {
-                    merged_schemas.push(schemas.pop().unwrap());
-                } else {
-                    merged_schemas.push(merge_schemas(schemas.pop().unwrap(), schemas.pop().unwrap())?);
-                }
-            }
-
-            Ok(Schema::Union(UnionSchema::new(merged_schemas)?))
+            Ok(Schema::Union(us1))
         }
         (Schema::Array(schema1), Schema::Array(schema2)) => {
             let merged_schema = merge_schemas(*schema1, *schema2)?;
@@ -324,65 +349,65 @@ pub fn merge_schemas(schema1: Schema, schema2: Schema) -> Result<Schema, Error> 
     }
 }
 
-
-fn clean_name(txt: &str) -> String {
-    let re = Regex::new(r"[^A-Za-z\d]").unwrap();
-    let pre_clean = re.replace_all(txt, "_").to_string();
-
-    let re = Regex::new(r"__+").unwrap();
-    let mut clean =
-        re
-            .replace_all(pre_clean.as_str(), "_")
-            .trim_start_matches("_")
-            .trim_end_matches("_")
-            .to_string();
-
-    if let Some(c) = clean.chars().next() {
-        if c.is_numeric() {
-            clean = "_".to_owned() + clean.as_str()
-        }
-    }
-    clean
-}
-
-
-pub fn json_to_avro(mut json: JsonValue, schema: Schema) -> Result<AvroValue, Error> {
-    let sk = SchemaKind::from(schema);
-    match (json, schema) {
-        (JsonValue::String(s), _) => { Ok(AvroValue::String(s)) }
-        (JsonValue::Number(n), _) => {
-            if let Some(l) = n.as_fixed_point_i64(0) {
-                Ok(AvroValue::Long(l))
-            }
-            else {
-                let (sign, mantissa, exp) = n.as_parts();
-                let v = mantissa as f64 * 10_f64.powi(exp as i32) * (sign as i8 * 2 - 1) as f64;
-                Ok(AvroValue::Double(v))
-            }
-        }
-        (JsonValue::Null, _) => { Ok(AvroValue::Null) }
-        (JsonValue::Boolean(b), _) => { Ok(AvroValue::Boolean(b)) }
-        (JsonValue::Short(s), _) => { Ok(AvroValue::String(s.to_string())) }
-        (JsonValue::Array(vector), _) => {
-            let mut avro_values = Vec::with_capacity(vector.len());
-            for item in vector {
-                avro_values.push(json_to_avro(item)?);
-            }
-            Ok(AvroValue::Array(avro_values))
-        }
-        (JsonValue::Object(_), Schema::Record {fields, ..}) => {
-            let mut record_fields = Vec::new();
-            for field in fields {
-                let json = json.remove(field.name.as_str());
-                let avro = json_to_avro(json, field.schema)?;
-                record_fields.push((field.name, avro));
-            }
-
-            Ok(AvroValue::Record(record_fields))
-        }
-        _ => Ok(AvroValue::Null)
-    }
-}
+//
+//fn clean_name(txt: &str) -> String {
+//    let re = Regex::new(r"[^A-Za-z\d]").unwrap();
+//    let pre_clean = re.replace_all(txt, "_").to_string();
+//
+//    let re = Regex::new(r"__+").unwrap();
+//    let mut clean =
+//        re
+//            .replace_all(pre_clean.as_str(), "_")
+//            .trim_start_matches("_")
+//            .trim_end_matches("_")
+//            .to_string();
+//
+//    if let Some(c) = clean.chars().next() {
+//        if c.is_numeric() {
+//            clean = "_".to_owned() + clean.as_str()
+//        }
+//    }
+//    clean
+//}
+//
+//
+//pub fn json_to_avro(mut json: JsonValue, schema: Schema) -> Result<AvroValue, Error> {
+//    let sk = SchemaKind::from(schema);
+//    match (json, schema) {
+//        (JsonValue::String(s), _) => { Ok(AvroValue::String(s)) }
+//        (JsonValue::Number(n), _) => {
+//            if let Some(l) = n.as_fixed_point_i64(0) {
+//                Ok(AvroValue::Long(l))
+//            }
+//            else {
+//                let (sign, mantissa, exp) = n.as_parts();
+//                let v = mantissa as f64 * 10_f64.powi(exp as i32) * (sign as i8 * 2 - 1) as f64;
+//                Ok(AvroValue::Double(v))
+//            }
+//        }
+//        (JsonValue::Null, _) => { Ok(AvroValue::Null) }
+//        (JsonValue::Boolean(b), _) => { Ok(AvroValue::Boolean(b)) }
+//        (JsonValue::Short(s), _) => { Ok(AvroValue::String(s.to_string())) }
+//        (JsonValue::Array(vector), _) => {
+//            let mut avro_values = Vec::with_capacity(vector.len());
+//            for item in vector {
+//                avro_values.push(json_to_avro(item)?);
+//            }
+//            Ok(AvroValue::Array(avro_values))
+//        }
+//        (JsonValue::Object(_), Schema::Record {fields, ..}) => {
+//            let mut record_fields = Vec::new();
+//            for field in fields {
+//                let json = json.remove(field.name.as_str());
+//                let avro = json_to_avro(json, field.schema)?;
+//                record_fields.push((field.name, avro));
+//            }
+//
+//            Ok(AvroValue::Record(record_fields))
+//        }
+//        _ => Ok(AvroValue::Null)
+//    }
+//}
 
 
 //fn clean_json(json_value: &mut JsonValue) {
@@ -423,7 +448,7 @@ mod test {
         let mut schemas =
             GzipFile::new("/usr/local/google/home/shafirasulov/IdeaProjects/learningrust/TweetsChampions.json.gz")
                 .lines
-//                .take(5000)
+                .take(5000)
 //                .map(|line| serde_json::from_str(line.unwrap().as_str()).unwrap())
                 .map(|line| json::parse(line.unwrap().as_str()).unwrap())
                 .enumerate()
@@ -453,13 +478,13 @@ mod test {
         println!("{:?}", &merged_schema.unwrap().canonical_form());
     }
 
-    #[test]
-    fn test_json_to_avro() {
-        let txt = r#"{"a": 1, "b": 2, "c": [1, "alma", true]}"#;
-        let json = json::parse(txt).unwrap();
-        let avro = json_to_avro(json).unwrap();
-        println!("{:?}", avro);
-    }
+//    #[test]
+//    fn test_json_to_avro() {
+//        let txt = r#"{"a": 1, "b": 2, "c": [1, "alma", true]}"#;
+//        let json = json::parse(txt).unwrap();
+//        let avro = json_to_avro(json).unwrap();
+//        println!("{:?}", avro);
+//    }
 
     fn test_file(n_rows: usize) -> impl Iterator<Item=String> {
         GzipFile::new("/usr/local/google/home/shafirasulov/IdeaProjects/learningrust/TweetsChampions.json.gz")
@@ -468,33 +493,33 @@ mod test {
             .take(n_rows)
     }
 
-    #[test]
-    fn test_end_to_end() {
-        let now = Instant::now();
-
-        let mut schemas =
-            test_file(50000000)
-                .map(|line| json::parse(line.as_str()).unwrap())
-                .enumerate()
-                .map(|(i, line)| infer_schema(&line, "inferred_schema"))
-            ;
-
-        let first = schemas.next().unwrap();
-        let final_schema = schemas
-            .fold(first, |base, next| {
-                let f = merge_schemas(base.unwrap(), next.unwrap());
-                f
-            }).unwrap();
-
-        let mut file = File::create("test.avro").unwrap();
-        let mut writer = Writer::with_codec(&final_schema, file, Codec::Deflate);
-        for line in test_file(5000000) {
-            let json = json::parse(&line).unwrap();
-            let avro = json_to_avro(json).unwrap();
-            writer.append(avro).unwrap();
-        }
-
-        writer.flush();
-        println!("Elapsed: {}", now.elapsed().as_millis());
-    }
+//    #[test]
+//    fn test_end_to_end() {
+//        let now = Instant::now();
+//
+//        let mut schemas =
+//            test_file(50000000)
+//                .map(|line| json::parse(line.as_str()).unwrap())
+//                .enumerate()
+//                .map(|(i, line)| infer_schema(&line, "inferred_schema"))
+//            ;
+//
+//        let first = schemas.next().unwrap();
+//        let final_schema = schemas
+//            .fold(first, |base, next| {
+//                let f = merge_schemas(base.unwrap(), next.unwrap());
+//                f
+//            }).unwrap();
+//
+//        let mut file = File::create("test.avro").unwrap();
+//        let mut writer = Writer::with_codec(&final_schema, file, Codec::Deflate);
+//        for line in test_file(5000000) {
+//            let json = json::parse(&line).unwrap();
+//            let avro = json_to_avro(json).unwrap();
+//            writer.append(avro).unwrap();
+//        }
+//
+//        writer.flush();
+//        println!("Elapsed: {}", now.elapsed().as_millis());
+//    }
 }
